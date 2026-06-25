@@ -41,6 +41,7 @@ function buildMatchEmbed(round, matchIndex, userId) {
     .setTitle(`${round.name} — Match ${matchIndex + 1}/${total}`)
     .setDescription(`**${match.teams[0]}** 🆚 **${match.teams[1]}**\n\nQui va gagner ?${statusLine}`)
     .setColor(match.closed ? '#e74c3c' : '#3498db')
+    .setImage(match.image || null)
     .setFooter({ text: `Match ${matchIndex + 1} sur ${total}` });
 }
 
@@ -184,7 +185,8 @@ client.on('interactionCreate', async interaction => {
         const parts = val.split('/').map(t => t.trim());
         if (parts.length !== 2)
           return interaction.reply({ content: `❌ Format invalide pour match${i}. Utilise : \`Équipe A / Équipe B\``, ephemeral: true });
-        matches.push({ id: `m${i}`, teams: parts, closed: false });
+        const image = interaction.options.getString(`image${i}`) || null;
+        matches.push({ id: `m${i}`, teams: parts, image, closed: false });
       }
 
       if (matches.length === 0)
