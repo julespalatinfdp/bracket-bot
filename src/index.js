@@ -5,14 +5,8 @@ const {
 } = require('discord.js');
 const fs = require('fs');
 
-// ─────────────────────────────────────────
-// CONFIG
-// ─────────────────────────────────────────
 const DATA_PATH = process.env.DATA_PATH || './bracket-data.json';
 
-// ─────────────────────────────────────────
-// DATA HELPERS
-// ─────────────────────────────────────────
 function loadData() {
   if (!fs.existsSync(DATA_PATH)) return { rounds: {}, votes: {}, results: {} };
   try { return JSON.parse(fs.readFileSync(DATA_PATH, 'utf8')); }
@@ -21,15 +15,12 @@ function loadData() {
 function saveData(data) { fs.writeFileSync(DATA_PATH, JSON.stringify(data, null, 2)); }
 
 // ─────────────────────────────────────────
-// BUILD EMBED POUR UN MATCH
-// rounds[roundId] = { name, matches: [{id, team1, team2, closed}], messageId, channelId }
-// votes[userId][roundId][matchId] = teamIndex (0 ou 1)
-// results[roundId][matchId] = teamIndex (0 ou 1)
+// BUILD EMBED + BOUTONS (vue personnalisée par user)
 // ─────────────────────────────────────────
 function buildMatchEmbed(round, matchIndex, userId) {
-  const data    = loadData();
-  const match   = round.matches[matchIndex];
-  const total   = round.matches.length;
+  const data     = loadData();
+  const match    = round.matches[matchIndex];
+  const total    = round.matches.length;
   const userVote = data.votes[userId]?.[round.id]?.[match.id];
   const hasVoted = userVote !== undefined;
   const result   = data.results[round.id]?.[match.id];
@@ -43,49 +34,42 @@ function buildMatchEmbed(round, matchIndex, userId) {
   } else if (hasVoted) {
     statusLine = `\n✔️ Tu as voté : **${match.teams[userVote]}**`;
   } else if (match.closed) {
-    statusLine = '\n🔒 Ce match est fermé.';
+    statusLine = '\n🔒 Ce match est fermé aux votes.';
   }
 
   return new EmbedBuilder()
     .setTitle(`${round.name} — Match ${matchIndex + 1}/${total}`)
-    .setDescription(
-      `**${match.teams[0]}** 🆚 **${match.teams[1]}**\n` +
-      `\nQui va gagner ?${statusLine}`
-    )
+    .setDescription(`**${match.teams[0]}** 🆚 **${match.teams[1]}**\n\nQui va gagner ?${statusLine}`)
     .setColor(match.closed ? '#e74c3c' : '#3498db')
     .setFooter({ text: `Match ${matchIndex + 1} sur ${total}` });
 }
 
 function buildMatchButtons(round, matchIndex, userId) {
-  const data    = loadData();
-  const match   = round.matches[matchIndex];
-  const total   = round.matches.length;
+  const data     = loadData();
+  const match    = round.matches[matchIndex];
+  const total    = round.matches.length;
   const userVote = data.votes[userId]?.[round.id]?.[match.id];
   const hasVoted = userVote !== undefined;
-  const voted0   = hasVoted && userVote === 0;
-  const voted1   = hasVoted && userVote === 1;
+  const rows     = [];
 
-  const rows = [];
-
-  // Boutons de vote (si pas fermé)
+  // Boutons de vote
   if (!match.closed) {
     rows.push(new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`vote:${round.id}:${match.id}:0:${matchIndex}`)
-        .setLabel(voted0 ? `✔️ ${match.teams[0]}` : match.teams[0])
-        .setStyle(voted0 ? ButtonStyle.Success : ButtonStyle.Primary)
+        .setLabel(hasVoted && userVote === 0 ? `✔️ ${match.teams[0]}` : match.teams[0])
+        .setStyle(hasVoted && userVote === 0 ? ButtonStyle.Success : ButtonStyle.Primary)
         .setDisabled(hasVoted),
       new ButtonBuilder()
         .setCustomId(`vote:${round.id}:${match.id}:1:${matchIndex}`)
-        .setLabel(voted1 ? `✔️ ${match.teams[1]}` : match.teams[1])
-        .setStyle(voted1 ? ButtonStyle.Success : ButtonStyle.Primary)
+        .setLabel(hasVoted && userVote === 1 ? `✔️ ${match.teams[1]}` : match.teams[1])
+        .setStyle(hasVoted && userVote === 1 ? ButtonStyle.Success : ButtonStyle.Primary)
         .setDisabled(hasVoted),
     ));
   }
 
-  // Boutons navigation
-  const navRow = new ActionRowBuilder();
-  navRow.addComponents(
+  // Navigation
+  rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`nav:${round.id}:${matchIndex - 1}`)
       .setLabel('◀ Précédent')
@@ -96,10 +80,30 @@ function buildMatchButtons(round, matchIndex, userId) {
       .setLabel('Suivant ▶')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(matchIndex === total - 1),
-  );
-  rows.push(navRow);
+  ));
 
   return rows;
+}
+
+// ─────────────────────────────────────────
+// EMBED PUBLIC (invitation à voter)
+// ─────────────────────────────────────────
+function buildPublicEmbed(round) {
+  const total = round.matches.length;
+  const matchList = round.matches.map((m, i) => `**${i + 1}.** ${m.teams[0]} 🆚 ${m.teams[1]}`).join('\n');
+  return new EmbedBuilder()
+    .setTitle(`📋 ${round.name} — Pronostics`)
+    .setDescription(`${total} matchs à pronostiquer !\n\n${matchList}\n\nClique sur le bouton ci-dessous pour faire tes pronostics.`)
+    .setColor('#3498db');
+}
+
+function buildPublicButton(roundId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`open:${roundId}`)
+      .setLabel('🎯 Faire mes pronostics')
+      .setStyle(ButtonStyle.Primary)
+  );
 }
 
 // ─────────────────────────────────────────
@@ -110,8 +114,9 @@ function buildClassementEmbed(roundId) {
   const round = data.rounds[roundId];
   if (!round) return null;
 
-  const results = data.results[roundId] || {};
+  const results       = data.results[roundId] || {};
   const closedMatches = round.matches.filter(m => results[m.id] !== undefined);
+
   if (closedMatches.length === 0) {
     return new EmbedBuilder()
       .setTitle(`🏆 Classement — ${round.name}`)
@@ -119,7 +124,6 @@ function buildClassementEmbed(roundId) {
       .setColor('#f1c40f');
   }
 
-  // Calculer le score de chaque votant
   const scores = {};
   for (const [userId, roundVotes] of Object.entries(data.votes)) {
     const userRoundVotes = roundVotes[roundId] || {};
@@ -131,12 +135,10 @@ function buildClassementEmbed(roundId) {
       if (userVote === result) correct++;
       else wrong++;
     }
-    scores[userId] = { correct, wrong, total: correct + wrong };
+    if (correct + wrong > 0) scores[userId] = { correct, wrong };
   }
 
-  const sorted = Object.entries(scores)
-    .filter(([, s]) => s.total > 0)
-    .sort(([, a], [, b]) => b.correct - a.correct || a.wrong - b.wrong);
+  const sorted = Object.entries(scores).sort(([, a], [, b]) => b.correct - a.correct || a.wrong - b.wrong);
 
   if (sorted.length === 0) {
     return new EmbedBuilder()
@@ -146,9 +148,9 @@ function buildClassementEmbed(roundId) {
   }
 
   const medals = ['🥇', '🥈', '🥉'];
-  const lines = sorted.map(([userId, s], i) => {
+  const lines  = sorted.map(([userId, s], i) => {
     const prefix = medals[i] || `**${i + 1}.**`;
-    return `${prefix} <@${userId}> — **${s.correct}✅ / ${s.wrong}❌** (${s.total}/${closedMatches.length} matchs votés)`;
+    return `${prefix} <@${userId}> — **${s.correct}✅ ${s.wrong}❌** (${s.correct + s.wrong}/${closedMatches.length} votés)`;
   });
 
   return new EmbedBuilder()
@@ -168,33 +170,32 @@ client.on('interactionCreate', async interaction => {
   // ── SLASH COMMANDS ───────────────────────
   if (interaction.isChatInputCommand()) {
 
-    // /create-bracket
     if (interaction.commandName === 'create-bracket') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
         return interaction.reply({ content: '❌ Réservé aux admins.', ephemeral: true });
 
-      const roundName = interaction.options.getString('nom');
-      const channel   = interaction.options.getChannel('channel') || interaction.channel;
-      const matchesRaw = [];
+      const roundName  = interaction.options.getString('nom');
+      const channel    = interaction.options.getChannel('channel') || interaction.channel;
+      const matches    = [];
 
       for (let i = 1; i <= 8; i++) {
         const val = interaction.options.getString(`match${i}`);
         if (!val) break;
         const parts = val.split('/').map(t => t.trim());
-        if (parts.length !== 2) return interaction.reply({ content: `❌ Format invalide pour match${i}. Utilise : \`Équipe A / Équipe B\``, ephemeral: true });
-        matchesRaw.push({ id: `m${i}`, teams: parts, closed: false });
+        if (parts.length !== 2)
+          return interaction.reply({ content: `❌ Format invalide pour match${i}. Utilise : \`Équipe A / Équipe B\``, ephemeral: true });
+        matches.push({ id: `m${i}`, teams: parts, closed: false });
       }
 
-      if (matchesRaw.length === 0)
+      if (matches.length === 0)
         return interaction.reply({ content: '❌ Ajoute au moins un match.', ephemeral: true });
 
       const roundId = `round_${Date.now()}`;
-      const round = { id: roundId, name: roundName, matches: matchesRaw, channelId: channel.id, messageId: null };
+      const round   = { id: roundId, name: roundName, matches, channelId: channel.id, messageId: null };
 
-      // Poster le premier match
       const msg = await channel.send({
-        embeds: [buildMatchEmbed(round, 0, interaction.user.id)],
-        components: buildMatchButtons(round, 0, interaction.user.id),
+        embeds: [buildPublicEmbed(round)],
+        components: [buildPublicButton(roundId)],
       });
 
       round.messageId = msg.id;
@@ -202,36 +203,33 @@ client.on('interactionCreate', async interaction => {
       data.rounds[roundId] = round;
       saveData(data);
 
-      return interaction.reply({ content: `✅ Bracket **${roundName}** créé avec ${matchesRaw.length} match(s) ! ID : \`${roundId}\``, ephemeral: true });
+      return interaction.reply({ content: `✅ Bracket **${roundName}** créé avec ${matches.length} match(s) !\nID : \`${roundId}\``, ephemeral: true });
     }
 
-    // /set-result
     if (interaction.commandName === 'set-result') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
         return interaction.reply({ content: '❌ Réservé aux admins.', ephemeral: true });
 
-      const roundId   = interaction.options.getString('round_id');
-      const matchNum  = interaction.options.getInteger('match_numero') - 1;
-      const winner    = interaction.options.getInteger('vainqueur') - 1;
-
-      const data  = loadData();
-      const round = data.rounds[roundId];
+      const roundId  = interaction.options.getString('round_id');
+      const matchNum = interaction.options.getInteger('match_numero') - 1;
+      const winner   = interaction.options.getInteger('vainqueur') - 1;
+      const data     = loadData();
+      const round    = data.rounds[roundId];
       if (!round) return interaction.reply({ content: `❌ Round \`${roundId}\` introuvable.`, ephemeral: true });
-      if (!round.matches[matchNum]) return interaction.reply({ content: `❌ Match ${matchNum + 1} introuvable.`, ephemeral: true });
+      const match = round.matches[matchNum];
+      if (!match) return interaction.reply({ content: `❌ Match ${matchNum + 1} introuvable.`, ephemeral: true });
 
       if (!data.results[roundId]) data.results[roundId] = {};
-      const match = round.matches[matchNum];
       data.results[roundId][match.id] = winner;
-      round.matches[matchNum].closed = true;
+      round.matches[matchNum].closed  = true;
       saveData(data);
 
       return interaction.reply({
-        content: `✅ Résultat enregistré : **${match.teams[winner]}** gagne le match ${matchNum + 1} de **${round.name}**.`,
+        content: `✅ **${match.teams[winner]}** gagne le match ${matchNum + 1} de **${round.name}**.`,
         ephemeral: true
       });
     }
 
-    // /classement-bracket
     if (interaction.commandName === 'classement-bracket') {
       if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages))
         return interaction.reply({ content: '❌ Réservé aux modérateurs.', ephemeral: true });
@@ -243,29 +241,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.channel.send({ embeds: [embed] });
       return interaction.reply({ content: '✅ Classement posté.', ephemeral: true });
     }
-
-    // /post-bracket
-    if (interaction.commandName === 'post-bracket') {
-      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator))
-        return interaction.reply({ content: '❌ Réservé aux admins.', ephemeral: true });
-
-      const roundId = interaction.options.getString('round_id');
-      const channel = interaction.options.getChannel('channel') || interaction.channel;
-      const data    = loadData();
-      const round   = data.rounds[roundId];
-      if (!round) return interaction.reply({ content: `❌ Round \`${roundId}\` introuvable.`, ephemeral: true });
-
-      const msg = await channel.send({
-        embeds: [buildMatchEmbed(round, 0, interaction.user.id)],
-        components: buildMatchButtons(round, 0, interaction.user.id),
-      });
-
-      round.messageId = msg.id;
-      round.channelId = channel.id;
-      saveData(data);
-
-      return interaction.reply({ content: `✅ Bracket reposté dans <#${channel.id}>.`, ephemeral: true });
-    }
   }
 
   // ── BOUTONS ──────────────────────────────
@@ -273,31 +248,40 @@ client.on('interactionCreate', async interaction => {
     const parts  = interaction.customId.split(':');
     const action = parts[0];
 
+    // Ouvrir la vue personnelle (éphémère)
+    if (action === 'open') {
+      const roundId = parts[1];
+      const data    = loadData();
+      const round   = data.rounds[roundId];
+      if (!round) return interaction.reply({ content: '❌ Bracket introuvable.', ephemeral: true });
+
+      return interaction.reply({
+        embeds: [buildMatchEmbed(round, 0, interaction.user.id)],
+        components: buildMatchButtons(round, 0, interaction.user.id),
+        ephemeral: true,
+      });
+    }
+
     // Vote
     if (action === 'vote') {
       const [, roundId, matchId, teamIdxStr, matchIdxStr] = parts;
       const teamIdx  = parseInt(teamIdxStr);
       const matchIdx = parseInt(matchIdxStr);
       const userId   = interaction.user.id;
-
-      const data  = loadData();
-      const round = data.rounds[roundId];
+      const data     = loadData();
+      const round    = data.rounds[roundId];
       if (!round) return interaction.reply({ content: '❌ Round introuvable.', ephemeral: true });
 
       const match = round.matches[matchIdx];
       if (match.closed) return interaction.reply({ content: '🔒 Ce match est fermé.', ephemeral: true });
-
-      // Vérifier si déjà voté
       if (data.votes[userId]?.[roundId]?.[matchId] !== undefined)
-        return interaction.reply({ content: '❌ Tu as déjà voté sur ce match. Le vote est irrévocable.', ephemeral: true });
+        return interaction.reply({ content: '❌ Vote irrévocable — tu as déjà voté sur ce match.', ephemeral: true });
 
-      // Enregistrer le vote
       if (!data.votes[userId]) data.votes[userId] = {};
       if (!data.votes[userId][roundId]) data.votes[userId][roundId] = {};
       data.votes[userId][roundId][matchId] = teamIdx;
       saveData(data);
 
-      // Mettre à jour l'embed (ephemeral pour ce user)
       return interaction.update({
         embeds: [buildMatchEmbed(round, matchIdx, userId)],
         components: buildMatchButtons(round, matchIdx, userId),
@@ -309,9 +293,8 @@ client.on('interactionCreate', async interaction => {
       const [, roundId, newIdxStr] = parts;
       const newIdx = parseInt(newIdxStr);
       const userId = interaction.user.id;
-
-      const data  = loadData();
-      const round = data.rounds[roundId];
+      const data   = loadData();
+      const round  = data.rounds[roundId];
       if (!round) return interaction.reply({ content: '❌ Round introuvable.', ephemeral: true });
       if (newIdx < 0 || newIdx >= round.matches.length)
         return interaction.reply({ content: '❌ Match introuvable.', ephemeral: true });
