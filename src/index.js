@@ -1,31 +1,43 @@
 const {
   Client, GatewayIntentBits, EmbedBuilder,
   ButtonBuilder, ButtonStyle, ActionRowBuilder,
-  PermissionFlagsBits,
+  PermissionFlagsBits, StringSelectMenuBuilder, StringSelectMenuOptionBuilder,
 } = require('discord.js');
 const fs = require('fs');
 
 const DATA_PATH        = process.env.DATA_PATH   || './bracket-data.json';
 const BACKUP_PATH      = process.env.BACKUP_PATH || './bracket-data-backup.json';
+const SCORES_PATH      = process.env.SCORES_PATH || './bracket-scores.json';
 const ADMIN_LOG_CHANNEL = '1519978475119837202';
 
 // ─────────────────────────────────────────
 // DATA HELPERS
 // ─────────────────────────────────────────
 function loadData() {
-  if (!fs.existsSync(DATA_PATH)) return { rounds: {}, votes: {}, results: {} };
+  if (!fs.existsSync(DATA_PATH)) return { rounds: {}, votes: {}, results: {}, boosts: {} };
   try { return JSON.parse(fs.readFileSync(DATA_PATH, 'utf8')); }
-  catch { return { rounds: {}, votes: {}, results: {} }; }
+  catch { return { rounds: {}, votes: {}, results: {}, boosts: {} }; }
 }
-
 function saveData(data) {
   fs.writeFileSync(DATA_PATH, JSON.stringify(data, null, 2));
-  // Backup automatique à chaque sauvegarde
   fs.writeFileSync(BACKUP_PATH, JSON.stringify({ ...data, _backupAt: new Date().toISOString() }, null, 2));
 }
 
+function loadScores() {
+  if (!fs.existsSync(SCORES_PATH)) return {};
+  try { return JSON.parse(fs.readFileSync(SCORES_PATH, 'utf8')); }
+  catch { return {}; }
+}
+function saveScores(scores) { fs.writeFileSync(SCORES_PATH, JSON.stringify(scores, null, 2)); }
+function creditScore(userId, amount) {
+  const scores = loadScores();
+  if (!scores[userId]) scores[userId] = 0;
+  scores[userId] = Math.round((scores[userId] + amount) * 100) / 100;
+  saveScores(scores);
+}
+
 // ─────────────────────────────────────────
-// TROUVER LE PROCHAIN MATCH NON VOTÉ
+// HELPERS
 // ─────────────────────────────────────────
 function getNextUnvotedMatch(round, userId, fromIndex = 0) {
   const data = loadData();
@@ -34,11 +46,15 @@ function getNextUnvotedMatch(round, userId, fromIndex = 0) {
     const hasVoted = data.votes[userId]?.[round.id]?.[match.id] !== undefined;
     if (!hasVoted && !match.closed) return i;
   }
-  return null; // tous votés ou fermés
+  return null;
+}
+
+function hasAllVoted(round, userId) {
+  return getNextUnvotedMatch(round, userId, 0) === null;
 }
 
 // ─────────────────────────────────────────
-// BUILD EMBED
+// BUILD EMBED MATCH
 // ─────────────────────────────────────────
 function buildMatchEmbed(round, matchIndex, userId) {
   const data     = loadData();
@@ -50,17 +66,19 @@ function buildMatchEmbed(round, matchIndex, userId) {
 
   let statusLine = '';
   if (match.closed && result !== undefined) {
-    statusLine = `\n✅ Résultat : **${match.teams[result]}**`;
+    statusLine = `\n✅ Résultat : **${match.teams[result].name}**`;
     if (hasVoted) statusLine += userVote === result ? '\n🎯 Tu avais bon !' : '\n❌ Tu t\'étais trompé.';
   } else if (match.closed) {
     statusLine = '\n🔒 Ce match est fermé aux votes.';
   } else if (hasVoted) {
-    statusLine = `\n✔️ Tu as voté : **${match.teams[userVote]}**`;
+    statusLine = `\n✔️ Tu as voté : **${match.teams[userVote].name}**`;
   }
 
+  const oddsLine = `\n\n📊 Cotes : **${match.teams[0].name}** x${match.teams[0].odds} | **${match.teams[1].name}** x${match.teams[1].odds}`;
+
   const embed = new EmbedBuilder()
-    .setTitle(`${round.name} : Match ${matchIndex + 1}/${total}`)
-    .setDescription(`**${match.teams[0]}** 🆚 **${match.teams[1]}**\n\nQui va gagner ?${statusLine}`)
+    .setTitle(`${round.name} - Match ${matchIndex + 1}/${total}`)
+    .setDescription(`**${match.teams[0].name}** 🆚 **${match.teams[1].name}**\n\nQui va gagner ?${oddsLine}${statusLine}`)
     .setColor(match.closed ? '#e74c3c' : '#3498db')
     .setFooter({ text: `Match ${matchIndex + 1} sur ${total}` });
 
@@ -68,65 +86,84 @@ function buildMatchEmbed(round, matchIndex, userId) {
   return embed;
 }
 
-// ─────────────────────────────────────────
-// BUILD BOUTONS (vote uniquement, pas de nav)
-// ─────────────────────────────────────────
-function buildMatchButtons(round, matchIndex, userId) {
-  const data     = loadData();
-  const match    = round.matches[matchIndex];
-  const userVote = data.votes[userId]?.[round.id]?.[match.id];
-  const hasVoted = userVote !== undefined;
-
-  if (match.closed || hasVoted) return [];
-
+function buildMatchButtons(round, matchIndex) {
+  const match = round.matches[matchIndex];
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`vote:${round.id}:${match.id}:0:${matchIndex}`)
-      .setLabel(match.teams[0])
+      .setLabel(`${match.teams[0].name} (x${match.teams[0].odds})`)
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(`vote:${round.id}:${match.id}:1:${matchIndex}`)
-      .setLabel(match.teams[1])
+      .setLabel(`${match.teams[1].name} (x${match.teams[1].odds})`)
       .setStyle(ButtonStyle.Primary),
   )];
 }
 
 // ─────────────────────────────────────────
-// EMBED RÉSUMÉ FINAL (tous les matchs votés)
+// RÉSUMÉ + BOOST
 // ─────────────────────────────────────────
 function buildSummaryEmbed(round, userId) {
-  const data  = loadData();
+  const data   = loadData();
+  const boost  = data.boosts?.[userId]?.[round.id];
+  const scores = loadScores();
+  const total  = scores[userId] ?? 0;
+
   const lines = round.matches.map((match, i) => {
     const userVote = data.votes[userId]?.[round.id]?.[match.id];
     const result   = data.results[round.id]?.[match.id];
+    const isBoost  = boost === match.id;
     let icon = '⏳';
     if (userVote !== undefined) {
       if (result !== undefined) icon = userVote === result ? '🎯' : '❌';
       else icon = '✔️';
-    } else if (match.closed) {
-      icon = '🔒';
-    }
-    const voted = userVote !== undefined ? `**${match.teams[userVote]}**` : '*pas voté*';
-    return `${icon} Match ${i + 1} : ${match.teams[0]} 🆚 ${match.teams[1]} → ${voted}`;
+    } else if (match.closed) icon = '🔒';
+    const voted  = userVote !== undefined ? `**${match.teams[userVote].name}** (x${match.teams[userVote].odds}${isBoost ? ' ⚡x2' : ''})` : '*pas voté*';
+    return `${icon} Match ${i + 1} : ${match.teams[0].name} 🆚 ${match.teams[1].name} - ${voted}`;
   });
 
   return new EmbedBuilder()
-    .setTitle(`📋 ${round.name} : Tes pronostics`)
-    .setDescription(lines.join('\n'))
+    .setTitle(`📋 ${round.name} - Tes pronostics`)
+    .setDescription(lines.join('\n') + `\n\n💰 Ton solde bracket : **${total} pts**`)
     .setColor('#2ecc71')
-    .setFooter({ text: 'Tous tes votes sont enregistrés !' });
+    .setFooter({ text: boost ? '⚡ Boost activé !' : 'Tu peux encore activer ton boost !' });
+}
+
+function buildBoostSelect(round, userId) {
+  const data  = loadData();
+  const votes = data.votes[userId]?.[round.id] || {};
+
+  const options = round.matches
+    .map((match, i) => {
+      const userVote = votes[match.id];
+      if (userVote === undefined) return null;
+      return new StringSelectMenuOptionBuilder()
+        .setValue(`${round.id}:${match.id}`)
+        .setLabel(`Match ${i + 1} : ${match.teams[userVote].name} (x${match.teams[userVote].odds} → x${(match.teams[userVote].odds * 2).toFixed(1)})`);
+    })
+    .filter(Boolean);
+
+  if (options.length === 0) return null;
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`boost_select:${round.id}`)
+    .setPlaceholder('Choisis le match à booster')
+    .addOptions(options);
+
+  return new ActionRowBuilder().addComponents(select);
 }
 
 // ─────────────────────────────────────────
 // EMBED PUBLIC
 // ─────────────────────────────────────────
 function buildPublicEmbed(round) {
-  const total     = round.matches.length;
   const closeDate = new Date(round.closeAt);
-  const matchList = round.matches.map((m, i) => `**${i + 1}.** ${m.teams[0]} 🆚 ${m.teams[1]}`).join('\n');
+  const matchList = round.matches.map((m, i) =>
+    `**${i + 1}.** ${m.teams[0].name} (x${m.teams[0].odds}) 🆚 ${m.teams[1].name} (x${m.teams[1].odds})`
+  ).join('\n');
   return new EmbedBuilder()
-    .setTitle(`📋 ${round.name} : Pronostics`)
-    .setDescription(`${total} matchs à pronostiquer !\n\n${matchList}\n\n⏰ Fermeture des votes : <t:${Math.floor(closeDate.getTime() / 1000)}:F>`)
+    .setTitle(`📋 ${round.name} - Pronostics`)
+    .setDescription(`${round.matches.length} matchs a pronostiquer !\n\n${matchList}\n\n⏰ Fermeture des votes : <t:${Math.floor(closeDate.getTime() / 1000)}:F>`)
     .setColor('#3498db');
 }
 
@@ -148,33 +185,41 @@ function buildClassementEmbed(roundId) {
   if (!round) return null;
   const results       = data.results[roundId] || {};
   const closedMatches = round.matches.filter(m => results[m.id] !== undefined);
-
   if (closedMatches.length === 0)
-    return new EmbedBuilder().setTitle(`🏆 Classement : ${round.name}`).setDescription('Aucun résultat enregistré.').setColor('#f1c40f');
+    return new EmbedBuilder().setTitle(`🏆 Classement - ${round.name}`).setDescription('Aucun résultat enregistré.').setColor('#f1c40f');
 
-  const scores = {};
+  // Calculer les gains de chaque joueur
+  const gains = {};
   for (const [userId, roundVotes] of Object.entries(data.votes)) {
-    const userRoundVotes = roundVotes[roundId] || {};
-    let correct = 0, wrong = 0;
+    const userVotes = roundVotes[roundId] || {};
+    const boost     = data.boosts?.[userId]?.[roundId];
+    let total = 0, correct = 0, wrong = 0;
     for (const match of closedMatches) {
-      const uv = userRoundVotes[match.id];
+      const uv = userVotes[match.id];
       if (uv === undefined) continue;
-      if (uv === results[match.id]) correct++; else wrong++;
+      if (uv === results[match.id]) {
+        correct++;
+        let pts = match.teams[uv].odds;
+        if (boost === match.id) pts *= 2;
+        total += pts;
+      } else {
+        wrong++;
+      }
     }
-    if (correct + wrong > 0) scores[userId] = { correct, wrong };
+    if (correct + wrong > 0) gains[userId] = { correct, wrong, total: Math.round(total * 100) / 100 };
   }
 
-  const sorted = Object.entries(scores).sort(([, a], [, b]) => b.correct - a.correct || a.wrong - b.wrong);
+  const sorted = Object.entries(gains).sort(([, a], [, b]) => b.total - a.total);
   if (sorted.length === 0)
-    return new EmbedBuilder().setTitle(`🏆 Classement : ${round.name}`).setDescription('Aucun vote enregistré.').setColor('#f1c40f');
+    return new EmbedBuilder().setTitle(`🏆 Classement - ${round.name}`).setDescription('Aucun vote enregistré.').setColor('#f1c40f');
 
   const medals = ['🥇', '🥈', '🥉'];
   const lines  = sorted.map(([userId, s], i) =>
-    `${medals[i] || `**${i + 1}.**`} <@${userId}> : **${s.correct}✅ ${s.wrong}❌** (${s.correct + s.wrong}/${closedMatches.length} votés)`
+    `${medals[i] || `**${i + 1}.**`} <@${userId}> - **${s.total} pts** (${s.correct}✅ ${s.wrong}❌)`
   );
 
   return new EmbedBuilder()
-    .setTitle(`🏆 Classement : ${round.name}`)
+    .setTitle(`🏆 Classement - ${round.name}`)
     .setDescription(lines.join('\n'))
     .setColor('#f1c40f')
     .setFooter({ text: `${closedMatches.length}/${round.matches.length} matchs avec résultats` });
@@ -187,23 +232,18 @@ function scheduleAutoClose(client, roundId) {
   const data  = loadData();
   const round = data.rounds[roundId];
   if (!round || round.votesClosed) return;
-
   const delay = new Date(round.closeAt).getTime() - Date.now();
   if (delay <= 0) return;
-
   setTimeout(async () => {
     const d = loadData();
     if (!d.rounds[roundId] || d.rounds[roundId].votesClosed) return;
     d.rounds[roundId].votesClosed = true;
-    // Fermer tous les matchs qui n'ont pas encore de résultat
     d.rounds[roundId].matches.forEach(m => { if (!m.closed) m.closed = true; });
     saveData(d);
     console.log(`🔒 Round ${roundId} fermé automatiquement.`);
-
-    // Mettre à jour le message public
     try {
-      const r = d.rounds[roundId];
-      const ch = await client.channels.fetch(r.channelId);
+      const r   = d.rounds[roundId];
+      const ch  = await client.channels.fetch(r.channelId);
       const msg = await ch.messages.fetch(r.messageId);
       await msg.edit({
         embeds: [buildPublicEmbed(r).setColor('#e74c3c').setTitle(`🔴 ${r.name} - VOTES FERMÉS`)],
@@ -214,12 +254,35 @@ function scheduleAutoClose(client, roundId) {
 }
 
 // ─────────────────────────────────────────
+// CRÉDITER LES GAINS APRÈS SET-RESULT
+// ─────────────────────────────────────────
+function creditMatchGains(roundId, matchId) {
+  const data   = loadData();
+  const round  = data.rounds[roundId];
+  const result = data.results[roundId]?.[matchId];
+  if (result === undefined || !round) return;
+
+  const match = round.matches.find(m => m.id === matchId);
+  if (!match) return;
+
+  for (const [userId, roundVotes] of Object.entries(data.votes)) {
+    const uv    = roundVotes[roundId]?.[matchId];
+    const boost = data.boosts?.[userId]?.[roundId];
+    if (uv === undefined || uv !== result) continue;
+    let pts = match.teams[uv].odds;
+    if (boost === matchId) pts *= 2;
+    creditScore(userId, pts);
+  }
+}
+
+// ─────────────────────────────────────────
 // CLIENT
 // ─────────────────────────────────────────
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.on('interactionCreate', async interaction => {
 
+  // ── SLASH COMMANDS ───────────────────────
   if (interaction.isChatInputCommand()) {
 
     // /create-bracket
@@ -239,11 +302,24 @@ client.on('interactionCreate', async interaction => {
       for (let i = 1; i <= 8; i++) {
         const val = interaction.options.getString(`match${i}`);
         if (!val) break;
-        const parts = val.split('/').map(t => t.trim());
-        if (parts.length !== 2)
-          return interaction.reply({ content: `❌ Format invalide pour match${i}. Utilise : \`Équipe A / Équipe B\``, ephemeral: true });
+        // Format : "France:3.3 / Espagne:1.5"
+        const sides = val.split('/').map(s => s.trim());
+        if (sides.length !== 2)
+          return interaction.reply({ content: `❌ Format invalide pour match${i}. Utilise : \`France:3.3 / Espagne:1.5\``, ephemeral: true });
+        const parseTeam = (s) => {
+          const idx = s.lastIndexOf(':');
+          if (idx === -1) return null;
+          const name = s.slice(0, idx).trim();
+          const odds = parseFloat(s.slice(idx + 1).trim());
+          if (!name || isNaN(odds)) return null;
+          return { name, odds };
+        };
+        const t0 = parseTeam(sides[0]);
+        const t1 = parseTeam(sides[1]);
+        if (!t0 || !t1)
+          return interaction.reply({ content: `❌ Format invalide pour match${i}. Utilise : \`France:3.3 / Espagne:1.5\``, ephemeral: true });
         const image = interaction.options.getString(`image${i}`) || null;
-        matches.push({ id: `m${i}`, teams: parts, image, closed: false });
+        matches.push({ id: `m${i}`, teams: [t0, t1], image, closed: false });
       }
 
       if (matches.length === 0)
@@ -259,11 +335,11 @@ client.on('interactionCreate', async interaction => {
 
       round.messageId = msg.id;
       const data = loadData();
+      if (!data.boosts) data.boosts = {};
       data.rounds[roundId] = round;
       saveData(data);
       scheduleAutoClose(client, roundId);
 
-      // Log dans canal admin
       try {
         const logCh = await client.channels.fetch(ADMIN_LOG_CHANNEL);
         await logCh.send({ embeds: [new EmbedBuilder()
@@ -293,8 +369,9 @@ client.on('interactionCreate', async interaction => {
       data.results[roundId][match.id] = winner;
       round.matches[matchNum].closed  = true;
       saveData(data);
+      creditMatchGains(roundId, match.id);
 
-      return interaction.reply({ content: `✅ **${match.teams[winner]}** gagne le match ${matchNum + 1} de **${round.name}**.`, ephemeral: true });
+      return interaction.reply({ content: `✅ **${match.teams[winner].name}** gagne le match ${matchNum + 1} de **${round.name}**. Gains crédités !`, ephemeral: true });
     }
 
     // /close-match
@@ -312,8 +389,7 @@ client.on('interactionCreate', async interaction => {
 
       round.matches[matchNum].closed = true;
       saveData(data);
-
-      return interaction.reply({ content: `🔒 Match ${matchNum + 1} (**${match.teams[0]}** 🆚 **${match.teams[1]}**) fermé manuellement.`, ephemeral: true });
+      return interaction.reply({ content: `🔒 Match ${matchNum + 1} (**${match.teams[0].name}** 🆚 **${match.teams[1].name}**) fermé manuellement.`, ephemeral: true });
     }
 
     // /classement-bracket
@@ -328,6 +404,14 @@ client.on('interactionCreate', async interaction => {
       await interaction.channel.send({ embeds: [embed] });
       return interaction.reply({ content: '✅ Classement posté.', ephemeral: true });
     }
+
+    // /solde-bracket
+    if (interaction.commandName === 'solde-bracket') {
+      const target = interaction.options.getUser('user') || interaction.user;
+      const scores = loadScores();
+      const pts    = scores[target.id] ?? 0;
+      return interaction.reply({ content: `💰 Solde bracket de <@${target.id}> : **${pts} pts**`, ephemeral: true });
+    }
   }
 
   // ── BOUTONS ──────────────────────────────
@@ -341,27 +425,29 @@ client.on('interactionCreate', async interaction => {
       const data    = loadData();
       const round   = data.rounds[roundId];
       if (!round) return interaction.reply({ content: '❌ Bracket introuvable.', ephemeral: true });
-
       if (round.votesClosed)
         return interaction.reply({ content: '🔴 Les votes sont fermés pour ce round.', ephemeral: true });
 
       const firstUnvoted = getNextUnvotedMatch(round, interaction.user.id, 0);
-
       if (firstUnvoted === null) {
+        const boost     = data.boosts?.[interaction.user.id]?.[roundId];
+        const boostRow  = !boost ? buildBoostSelect(round, interaction.user.id) : null;
+        const components = boostRow ? [boostRow] : [];
         return interaction.reply({
           embeds: [buildSummaryEmbed(round, interaction.user.id)],
+          components,
           ephemeral: true,
         });
       }
 
       return interaction.reply({
         embeds: [buildMatchEmbed(round, firstUnvoted, interaction.user.id)],
-        components: buildMatchButtons(round, firstUnvoted, interaction.user.id),
+        components: buildMatchButtons(round, firstUnvoted),
         ephemeral: true,
       });
     }
 
-    // Vote → passe automatiquement au suivant
+    // Vote
     if (action === 'vote') {
       const [, roundId, matchId, teamIdxStr, matchIdxStr] = parts;
       const teamIdx  = parseInt(teamIdxStr);
@@ -376,27 +462,57 @@ client.on('interactionCreate', async interaction => {
       if (data.votes[userId]?.[roundId]?.[matchId] !== undefined)
         return interaction.reply({ content: '❌ Vote irrévocable, tu as déjà voté.', ephemeral: true });
 
-      // Enregistrer le vote
       if (!data.votes[userId]) data.votes[userId] = {};
       if (!data.votes[userId][roundId]) data.votes[userId][roundId] = {};
       data.votes[userId][roundId][matchId] = teamIdx;
       saveData(data);
 
-      // Trouver le prochain match non voté
       const nextIdx = getNextUnvotedMatch(round, userId, matchIdx + 1);
-
       if (nextIdx === null) {
-        // Tous les matchs sont votés → afficher le résumé
+        // Tous votés : afficher résumé + select boost si pas encore utilisé
+        const boost    = data.boosts?.[userId]?.[roundId];
+        const boostRow = !boost ? buildBoostSelect(round, userId) : null;
         return interaction.update({
           embeds: [buildSummaryEmbed(round, userId)],
-          components: [],
+          components: boostRow ? [boostRow] : [],
         });
       }
 
-      // Passer au prochain match
       return interaction.update({
         embeds: [buildMatchEmbed(round, nextIdx, userId)],
-        components: buildMatchButtons(round, nextIdx, userId),
+        components: buildMatchButtons(round, nextIdx),
+      });
+    }
+  }
+
+  // ── SELECT MENU BOOST ────────────────────
+  if (interaction.isStringSelectMenu()) {
+    const parts  = interaction.customId.split(':');
+    const action = parts[0];
+
+    if (action === 'boost_select') {
+      const roundId = parts[1];
+      const [, matchId] = interaction.values[0].split(':');
+      const userId  = interaction.user.id;
+      const data    = loadData();
+      const round   = data.rounds[roundId];
+      if (!round) return interaction.reply({ content: '❌ Round introuvable.', ephemeral: true });
+
+      if (data.boosts?.[userId]?.[roundId])
+        return interaction.reply({ content: '❌ Tu as déjà utilisé ton boost sur ce bracket.', ephemeral: true });
+
+      if (!data.boosts) data.boosts = {};
+      if (!data.boosts[userId]) data.boosts[userId] = {};
+      data.boosts[userId][roundId] = matchId;
+      saveData(data);
+
+      const match    = round.matches.find(m => m.id === matchId);
+      const userVote = data.votes[userId][roundId][matchId];
+
+      return interaction.update({
+        embeds: [buildSummaryEmbed(round, userId)
+          .setFooter({ text: `⚡ Boost activé sur ${match.teams[userVote].name} !` })],
+        components: [],
       });
     }
   }
@@ -404,12 +520,11 @@ client.on('interactionCreate', async interaction => {
 
 client.once('ready', () => {
   console.log(`🤖 Bot connecté : ${client.user.tag}`);
-  // Reprogrammer les fermetures auto au démarrage
   const data = loadData();
   for (const [id, round] of Object.entries(data.rounds)) {
     if (!round.votesClosed && new Date(round.closeAt) > new Date()) {
       scheduleAutoClose(client, id);
-      console.log(`⏰ Fermeture reprogrammée : ${id} à ${round.closeAt}`);
+      console.log(`⏰ Fermeture reprogrammée : ${id}`);
     }
   }
 });
