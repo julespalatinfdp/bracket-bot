@@ -5,8 +5,9 @@ const {
 } = require('discord.js');
 const fs = require('fs');
 
-const DATA_PATH   = process.env.DATA_PATH   || './bracket-data.json';
-const BACKUP_PATH = process.env.BACKUP_PATH || './bracket-data-backup.json';
+const DATA_PATH        = process.env.DATA_PATH   || './bracket-data.json';
+const BACKUP_PATH      = process.env.BACKUP_PATH || './bracket-data-backup.json';
+const ADMIN_LOG_CHANNEL = '1519978475119837202';
 
 // ─────────────────────────────────────────
 // DATA HELPERS
@@ -58,7 +59,7 @@ function buildMatchEmbed(round, matchIndex, userId) {
   }
 
   const embed = new EmbedBuilder()
-    .setTitle(`${round.name} — Match ${matchIndex + 1}/${total}`)
+    .setTitle(`${round.name} : Match ${matchIndex + 1}/${total}`)
     .setDescription(`**${match.teams[0]}** 🆚 **${match.teams[1]}**\n\nQui va gagner ?${statusLine}`)
     .setColor(match.closed ? '#e74c3c' : '#3498db')
     .setFooter({ text: `Match ${matchIndex + 1} sur ${total}` });
@@ -110,7 +111,7 @@ function buildSummaryEmbed(round, userId) {
   });
 
   return new EmbedBuilder()
-    .setTitle(`📋 ${round.name} — Tes pronostics`)
+    .setTitle(`📋 ${round.name} : Tes pronostics`)
     .setDescription(lines.join('\n'))
     .setColor('#2ecc71')
     .setFooter({ text: 'Tous tes votes sont enregistrés !' });
@@ -124,7 +125,7 @@ function buildPublicEmbed(round) {
   const closeDate = new Date(round.closeAt);
   const matchList = round.matches.map((m, i) => `**${i + 1}.** ${m.teams[0]} 🆚 ${m.teams[1]}`).join('\n');
   return new EmbedBuilder()
-    .setTitle(`📋 ${round.name} — Pronostics`)
+    .setTitle(`📋 ${round.name} : Pronostics`)
     .setDescription(`${total} matchs à pronostiquer !\n\n${matchList}\n\n⏰ Fermeture des votes : <t:${Math.floor(closeDate.getTime() / 1000)}:F>`)
     .setColor('#3498db');
 }
@@ -149,7 +150,7 @@ function buildClassementEmbed(roundId) {
   const closedMatches = round.matches.filter(m => results[m.id] !== undefined);
 
   if (closedMatches.length === 0)
-    return new EmbedBuilder().setTitle(`🏆 Classement — ${round.name}`).setDescription('Aucun résultat enregistré.').setColor('#f1c40f');
+    return new EmbedBuilder().setTitle(`🏆 Classement : ${round.name}`).setDescription('Aucun résultat enregistré.').setColor('#f1c40f');
 
   const scores = {};
   for (const [userId, roundVotes] of Object.entries(data.votes)) {
@@ -165,15 +166,15 @@ function buildClassementEmbed(roundId) {
 
   const sorted = Object.entries(scores).sort(([, a], [, b]) => b.correct - a.correct || a.wrong - b.wrong);
   if (sorted.length === 0)
-    return new EmbedBuilder().setTitle(`🏆 Classement — ${round.name}`).setDescription('Aucun vote enregistré.').setColor('#f1c40f');
+    return new EmbedBuilder().setTitle(`🏆 Classement : ${round.name}`).setDescription('Aucun vote enregistré.').setColor('#f1c40f');
 
   const medals = ['🥇', '🥈', '🥉'];
   const lines  = sorted.map(([userId, s], i) =>
-    `${medals[i] || `**${i + 1}.**`} <@${userId}> — **${s.correct}✅ ${s.wrong}❌** (${s.correct + s.wrong}/${closedMatches.length} votés)`
+    `${medals[i] || `**${i + 1}.**`} <@${userId}> : **${s.correct}✅ ${s.wrong}❌** (${s.correct + s.wrong}/${closedMatches.length} votés)`
   );
 
   return new EmbedBuilder()
-    .setTitle(`🏆 Classement — ${round.name}`)
+    .setTitle(`🏆 Classement : ${round.name}`)
     .setDescription(lines.join('\n'))
     .setColor('#f1c40f')
     .setFooter({ text: `${closedMatches.length}/${round.matches.length} matchs avec résultats` });
@@ -205,7 +206,7 @@ function scheduleAutoClose(client, roundId) {
       const ch = await client.channels.fetch(r.channelId);
       const msg = await ch.messages.fetch(r.messageId);
       await msg.edit({
-        embeds: [buildPublicEmbed(r).setColor('#e74c3c').setTitle(`🔴 ${r.name} — VOTES FERMÉS`)],
+        embeds: [buildPublicEmbed(r).setColor('#e74c3c').setTitle(`🔴 ${r.name} - VOTES FERMÉS`)],
         components: [],
       });
     } catch {}
@@ -261,6 +262,15 @@ client.on('interactionCreate', async interaction => {
       data.rounds[roundId] = round;
       saveData(data);
       scheduleAutoClose(client, roundId);
+
+      // Log dans canal admin
+      try {
+        const logCh = await client.channels.fetch(ADMIN_LOG_CHANNEL);
+        await logCh.send({ embeds: [new EmbedBuilder()
+          .setTitle('📋 Nouveau bracket créé')
+          .setDescription(`**Nom :** ${roundName}\n**ID :** \`${roundId}\`\n**Fermeture :** <t:${Math.floor(closeDate.getTime() / 1000)}:F>\n**Channel :** <#${channel.id}>\n**Matchs :** ${matches.length}`)
+          .setColor('#3498db')] });
+      } catch (e) { console.error('❌ Erreur log admin :', e.message); }
 
       return interaction.reply({ content: `✅ Bracket **${roundName}** créé ! ID : \`${roundId}\`\nFermeture : <t:${Math.floor(closeDate.getTime() / 1000)}:F>`, ephemeral: true });
     }
@@ -364,7 +374,7 @@ client.on('interactionCreate', async interaction => {
       const match = round.matches[matchIdx];
       if (match.closed) return interaction.reply({ content: '🔒 Ce match est fermé.', ephemeral: true });
       if (data.votes[userId]?.[roundId]?.[matchId] !== undefined)
-        return interaction.reply({ content: '❌ Vote irrévocable — tu as déjà voté.', ephemeral: true });
+        return interaction.reply({ content: '❌ Vote irrévocable, tu as déjà voté.', ephemeral: true });
 
       // Enregistrer le vote
       if (!data.votes[userId]) data.votes[userId] = {};
