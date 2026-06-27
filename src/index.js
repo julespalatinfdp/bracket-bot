@@ -124,9 +124,9 @@ function buildSummaryEmbed(round, userId) {
 
   return new EmbedBuilder()
     .setTitle(`📋 ${round.name} - Tes pronostics`)
-    .setDescription(lines.join('\n') + `\n\n💰 Ton solde bracket : **${total} pts**`)
+    .setDescription(lines.join('\n') + `\n\n⚡ Total de points : **${total} pts**`)
     .setColor('#2ecc71')
-    .setFooter({ text: boost ? '⚡ Boost activé !' : 'Tu peux encore activer ton boost !' });
+    .setFooter({ text: boost ? '⚡ Boost activé !' : '💡 Tu as un boost disponible — utilise-le ci-dessous !' });
 }
 
 function buildBoostSelect(round, userId) {
@@ -147,7 +147,7 @@ function buildBoostSelect(round, userId) {
 
   const select = new StringSelectMenuBuilder()
     .setCustomId(`boost_select:${round.id}`)
-    .setPlaceholder('Choisis le match à booster')
+    .setPlaceholder('⚡ Choisis le pronostic à booster - gain x2 si tu as bon')
     .addOptions(options);
 
   return new ActionRowBuilder().addComponents(select);
