@@ -107,8 +107,7 @@ function buildMatchEmbed(round, matchIndex, userId) {
   const embed = new EmbedBuilder()
     .setTitle(`${round.name} - Match ${matchIndex + 1}/${total}`)
     .setDescription(`**${match.teams[0].name}** 🆚 **${match.teams[1].name}**\n\nQui va gagner ?${oddsLine}${statusLine}`)
-    .setColor(match.closed ? '#e74c3c' : '#3498db')
-    .setFooter({ text: `Match ${matchIndex + 1} sur ${total}` });
+    .setColor(match.closed ? '#e74c3c' : '#3498db');
 
   if (match.image) embed.setImage(match.image);
   return embed;
@@ -153,8 +152,7 @@ function buildSummaryEmbed(round, userId) {
   return new EmbedBuilder()
     .setTitle(`📋 ${round.name} - Tes pronostics`)
     .setDescription(lines.join('\n') + (boost ? '' : '\n\n💡 **Tu as un boost disponible : utilise-le ci-dessous !**'))
-    .setColor('#2ecc71')
-    .setFooter({ text: boost ? '⚡ Boost activé !' : '' });
+    .setColor('#2ecc71');
 }
 
 function buildBoostSelect(round, userId) {
@@ -246,8 +244,7 @@ function buildClassementEmbed(roundId) {
   return new EmbedBuilder()
     .setTitle(`🏆 Classement - ${round.name}`)
     .setDescription(lines.join('\n'))
-    .setColor('#f1c40f')
-    .setFooter({ text: `${closedMatches.length}/${round.matches.length} matchs avec résultats` });
+    .setColor('#f1c40f');
 }
 
 // ─────────────────────────────────────────
@@ -512,8 +509,7 @@ client.on('interactionCreate', async interaction => {
     const userVote = data.votes[userId][roundId][matchId];
 
     return interaction.update({
-      embeds: [buildSummaryEmbed(round, userId)
-        .setFooter({ text: `⚡ Boost activé sur ${match.teams[userVote].name} !` })],
+      embeds: [buildSummaryEmbed(round, userId)],
       components: [],
     });
   }
