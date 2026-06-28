@@ -152,9 +152,9 @@ function buildSummaryEmbed(round, userId) {
 
   return new EmbedBuilder()
     .setTitle(`📋 ${round.name} - Tes pronostics`)
-    .setDescription(lines.join('\n'))
+    .setDescription(lines.join('\n') + (boost ? '' : '\n\n💡 **Tu as un boost disponible : utilise-le ci-dessous !**'))
     .setColor('#2ecc71')
-    .setFooter({ text: boost ? '⚡ Boost activé !' : '💡 Tu as un boost disponible : utilise-le ci-dessous !' });
+    .setFooter({ text: boost ? '⚡ Boost activé !' : '' });
 }
 
 function buildBoostSelect(round, userId) {
